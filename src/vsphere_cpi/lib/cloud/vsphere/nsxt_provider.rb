@@ -173,34 +173,34 @@ module VSphereCloud
       end
     end
 
+    def update_logical_port_metadata(logical_port, metadata)
+      tags = logical_port.tags || []
+
+      unless (bosh_id = metadata['id']).nil? || bosh_id.empty?
+        tags.delete_if { |t| t.scope == 'bosh/id' }
+        id_hash = Digest::SHA1.hexdigest(bosh_id)
+        tags << NSXT::Tag.new(scope: 'bosh/id', tag: id_hash)
+      end
+
+      %s[director deployment name job index].each do |key|
+        next if (value = metadata[key]).nil? || value.empty?
+        tags.delete_if { |t| t.scope == "bosh/#{key}" }
+        tags << NSXT::Tag.new(scope: "bosh/#{key}", tag: value)
+      end
+
+      logical_port.tags = tags
+      logical_switching_svc.update_logical_port_with_http_info(logical_port.id, logical_port)
+    rescue NSXT::ApiCallError => e
+      raise unless e.code == 412
+      logical_port = logical_switching_svc.get_logical_port(logical_port.id)
+      retry
+    end
+
     def update_vm_metadata_on_logical_ports(vm, metadata)
-      return unless metadata.has_key?('id')
       return if nsxt_nics(vm).empty?
 
       logical_ports(vm).each do |logical_port|
-        loop do
-          tags = logical_port.tags || []
-          tags_by_scope = tags.group_by { |tag| tag.scope }
-          bosh_id_tags = tags_by_scope.fetch('bosh/id', [])
-
-          raise InvalidLogicalPortError.new(logical_port) if bosh_id_tags.uniq.length > 1
-
-          id_tag = NSXT::Tag.new('scope' => 'bosh/id', 'tag' => Digest::SHA1.hexdigest(metadata['id']))
-          tags.delete_if { |tag| tag.scope == 'bosh/id' }
-          tags << id_tag
-
-          logical_port.tags = tags
-          begin
-            lport = logical_switching_svc.update_logical_port_with_http_info(logical_port.id, logical_port)
-            break if lport
-          rescue NSXT::ApiCallError => e
-            if e.code == 412
-              logical_port = logical_switching_svc.get_logical_port(logical_port.id)
-            else
-              raise e
-            end
-          end
-        end
+        update_logical_port_metadata(logical_port, metadata)
       end
     end
 
